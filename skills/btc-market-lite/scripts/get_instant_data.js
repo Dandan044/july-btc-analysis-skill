@@ -1,0 +1,462 @@
+#!/usr/bin/env node
+/**
+ * 即时分析数据获取 v5
+ * 数据源: OKX CLI + OKX API
+ * 
+ * 改进:
+ *   - 使用 OKX CLI 获取 K线数据
+ *   - 使用 OKX API 获取交易侧数据（多空比、Taker比）
+ *   - 统一数据源为 OKX
+ * 
+ * 功能:
+ *   - 12根4小时K线
+ *   - 4根1小时K线  
+ *   - 8根15分钟K线
+ *   - 附带交易侧数据（资金费率、OI、多空比、Taker买卖比）
+ * 
+ * 用法:
+ *   node get_instant_data_v5.js [--json] [--save] [--proxy http://127.0.0.1:7890]
+ */
+
+const https = require('https');
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const { URL } = require('url');
+const { exec } = require('child_process');
+
+// ========== 配置 ==========
+
+const PROXY_DEFAULT = 'http://127.0.0.1:7890';
+const OKX_API_BASE = 'https://www.okx.com';
+const OKX_INST_ID_SWAP = 'BTC-USDT-SWAP';
+const OKX_PROXY_SCRIPT = path.resolve(__dirname, '../../../scripts/okx-proxy.sh');
+
+// ========== 工具函数 ==========
+
+function toBeijingTime(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  return d.toLocaleString('en-CA', { 
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).replace(',', '');
+}
+
+function toBeijingDatetime(timestampMs) {
+  const d = new Date(timestampMs);
+  return d.toLocaleString('en-CA', { 
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).replace(',', '');
+}
+
+/**
+ * 调用 OKX CLI 工具（通过代理 wrapper）
+ */
+function okxCLI(args, proxy = null) {
+  return new Promise((resolve, reject) => {
+    let cmd;
+    if (proxy && fs.existsSync(OKX_PROXY_SCRIPT)) {
+      cmd = `${OKX_PROXY_SCRIPT} ${args}`;
+    } else if (proxy) {
+      cmd = `proxychains4 -q okx ${args}`;
+    } else {
+      cmd = `okx ${args}`;
+    }
+    
+    exec(cmd, { maxBuffer: 50 * 1024 * 1024, timeout: 60000 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(`OKX CLI error: ${error.message}`));
+        return;
+      }
+      resolve(stdout);
+    });
+  });
+}
+
+/**
+ * 调用 OKX CLI 并解析 JSON 输出
+ */
+async function okxCLIJson(args, proxy = null) {
+  const stdout = await okxCLI(`${args} --json`, proxy);
+  try {
+    const data = JSON.parse(stdout);
+    // OKX CLI 返回的可能是数组或对象
+    if (Array.isArray(data)) {
+      if (data.length > 0 && data[0]?.data) {
+        return data[0];
+      }
+      return data;
+    }
+    return data;
+  } catch (e) {
+    throw new Error(`JSON parse error: ${e.message}`);
+  }
+}
+
+/**
+ * 通过 curl 获取 OKX API 数据
+ */
+async function getOKXData(endpoint, proxy) {
+  if (!proxy) return null;
+  
+  return new Promise((resolve) => {
+    const url = `${OKX_API_BASE}${endpoint}`;
+    const cmd = `curl -s --max-time 30 -x ${proxy} '${url}'`;
+    
+    exec(cmd, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        console.error('OKX curl error:', error.message);
+        resolve(null);
+        return;
+      }
+      
+      try {
+        const json = JSON.parse(stdout);
+        resolve(json);
+      } catch (e) {
+        console.error('OKX JSON parse error:', e.message);
+        resolve(null);
+      }
+    });
+  });
+}
+
+// ========== K线数据获取 ==========
+
+/**
+ * 获取K线数据（使用 OKX CLI）
+ * @param {string} bar - 时间间隔：4H, 1H, 15m
+ * @param {number} limit - 数量
+ * @param {string} proxy - 代理
+ */
+async function getKlineData(bar, limit, proxy) {
+  // OKX 格式: 4H, 1H, 15m
+  const klinesData = await okxCLIJson(`market candles ${OKX_INST_ID_SWAP} --bar ${bar} --limit ${limit}`, proxy).catch(e => {
+    console.error(`${bar} klines error:`, e.message);
+    return null;
+  });
+  
+  const klinesArray = Array.isArray(klinesData) ? klinesData : klinesData?.data;
+  
+  if (!klinesArray || klinesArray.length === 0) {
+    return null;
+  }
+  
+  // 获取交易侧数据（OKX API）
+  const periodMap = { '4H': '4H', '1H': '1H', '15m': '15m' };
+  const period = periodMap[bar] || bar;
+  
+  const [openInterest, longShortRatio, topTraderRatio, takerVolume] = await Promise.all([
+    getOKXData(`/api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC&period=${period}&limit=${limit}`, proxy).catch(() => null),
+    getOKXData(`/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=BTC&period=${period}&limit=${limit}`, proxy).catch(() => null),
+    getOKXData(`/api/v5/rubik/stat/contracts/long-short-account-ratio-contract-top-trader?instId=${OKX_INST_ID_SWAP}&period=${period}&limit=${limit}`, proxy).catch(() => null),
+    getOKXData(`/api/v5/rubik/stat/taker-volume?instId=${OKX_INST_ID_SWAP}&instType=CONTRACTS&ccy=BTC&period=${period}&limit=${limit}`, proxy).catch(() => null)
+  ]);
+  
+  const result = [];
+  
+  // 解析 K线 (OKX 格式: [ts, open, high, low, close, vol, volCcy, volCcyQuote, confirm])
+  for (let i = 0; i < klinesArray.length; i++) {
+    const k = klinesArray[i];
+    const entry = {
+      time: toBeijingDatetime(parseInt(k[0])),
+      timestamp: parseInt(k[0]),
+      open: parseFloat(k[1]),
+      high: parseFloat(k[2]),
+      low: parseFloat(k[3]),
+      close: parseFloat(k[4]),
+      volume: parseFloat(k[5]),
+      quoteVolume: parseFloat(k[7])
+    };
+    result.push(entry);
+  }
+  
+  const tsMap = new Map(result.map((r, i) => [r.timestamp, i]));
+  
+  // 获取最新资金费率（OKX CLI）
+  if (bar === '4H') {
+    const fundingData = await okxCLIJson(`market funding-rate ${OKX_INST_ID_SWAP}`, proxy).catch(() => null);
+    const fundingArr = Array.isArray(fundingData) ? fundingData : fundingData?.data;
+    
+    if (fundingArr && fundingArr[0]) {
+      const f = fundingArr[0];
+      const fundingTs = parseInt(f.fundingTime);
+      const idx = tsMap.get(fundingTs);
+      if (idx !== undefined) {
+        result[idx].fundingRate = parseFloat(f.fundingRate);
+        result[idx].markPrice = parseFloat(f.markPrice || 0);
+      }
+      // 也填入最新一根（可能是下一根K线）
+      if (result[0]) {
+        result[0].fundingRate = parseFloat(f.fundingRate);
+        result[0].markPrice = parseFloat(f.markPrice || 0);
+      }
+    }
+  }
+  
+  // OI
+  if (openInterest?.data && Array.isArray(openInterest.data)) {
+    for (const d of openInterest.data.slice(0, limit)) {
+      const ts = parseInt(d[0]);
+      const idx = tsMap.get(ts);
+      if (idx !== undefined) {
+        result[idx].openInterest = parseFloat(d[1]);
+        result[idx].openInterestValue = parseFloat(d[1]) * result[idx].close;
+      }
+    }
+  }
+  
+  // 多空比
+  if (longShortRatio?.data && Array.isArray(longShortRatio.data)) {
+    for (const d of longShortRatio.data.slice(0, limit)) {
+      const ts = parseInt(d[0]);
+      const idx = tsMap.get(ts);
+      if (idx !== undefined) {
+        result[idx].longShortRatio = parseFloat(d[1]);
+        result[idx].longAccount = parseFloat(d[1]) / (1 + parseFloat(d[1]));
+        result[idx].shortAccount = 1 / (1 + parseFloat(d[1]));
+      }
+    }
+  }
+  
+  // 大户持仓比
+  if (topTraderRatio?.data && Array.isArray(topTraderRatio.data)) {
+    for (const d of topTraderRatio.data.slice(0, limit)) {
+      const ts = parseInt(d[0]);
+      const idx = tsMap.get(ts);
+      if (idx !== undefined) {
+        result[idx].topTraderRatio = parseFloat(d[1]);
+      }
+    }
+  }
+  
+  // Taker 买卖比
+  if (takerVolume?.data && Array.isArray(takerVolume.data)) {
+    for (const d of takerVolume.data.slice(0, limit)) {
+      const ts = parseInt(d[0]);
+      const idx = tsMap.get(ts);
+      if (idx !== undefined) {
+        const buyVol = parseFloat(d[1]);
+        const sellVol = parseFloat(d[2]);
+        result[idx].takerRatio = sellVol > 0 ? buyVol / sellVol : null;
+        result[idx].takerBuyVol = buyVol;
+        result[idx].takerSellVol = sellVol;
+      }
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * 获取24小时ticker数据
+ */
+async function getTicker24h(proxy) {
+  const tickerData = await okxCLIJson(`market ticker ${OKX_INST_ID_SWAP}`, proxy).catch(() => null);
+  const tickerArr = Array.isArray(tickerData) ? tickerData : tickerData?.data;
+  
+  if (!tickerArr || !tickerArr[0]) return null;
+  
+  const t = tickerArr[0];
+  const lastPrice = parseFloat(t.last);
+  const open24h = parseFloat(t.open24h || lastPrice);
+  
+  return {
+    price: lastPrice,
+    priceChange: lastPrice - open24h,
+    priceChangePercent: open24h > 0 ? ((lastPrice - open24h) / open24h * 100) : 0,
+    high24h: parseFloat(t.high24h),
+    low24h: parseFloat(t.low24h),
+    volume24h: parseFloat(t.vol24h || 0) * lastPrice,  // 转换为 USDT
+    openTime: null,
+    closeTime: Date.now()
+  };
+}
+
+// ========== 主数据获取 ==========
+
+async function getInstantData(proxy = null) {
+  const result = {
+    timestamp: toBeijingTime(new Date()),
+    ticker: null,
+    kline4h: null,
+    kline1h: null,
+    kline15m: null,
+    dataSource: {
+      price: 'OKX CLI',
+      proxy: proxy ? 'via proxy' : 'no proxy'
+    }
+  };
+
+  try {
+    console.error('使用 OKX CLI 获取即时数据...');
+    
+    // 并行获取所有数据
+    const [ticker, kline4h, kline1h, kline15m] = await Promise.all([
+      getTicker24h(proxy).catch(e => { console.error('Ticker error:', e.message); return null; }),
+      getKlineData('4H', 12, proxy).catch(e => { console.error('4h error:', e.message); return null; }),
+      getKlineData('1H', 4, proxy).catch(e => { console.error('1h error:', e.message); return null; }),
+      getKlineData('15m', 8, proxy).catch(e => { console.error('15m error:', e.message); return null; })
+    ]);
+
+    result.ticker = ticker;
+    result.kline4h = kline4h;
+    result.kline1h = kline1h;
+    result.kline15m = kline15m;
+
+  } catch (e) {
+    console.error('数据获取错误:', e.message);
+    throw e;
+  }
+
+  return result;
+}
+
+// ========== 格式化输出 ==========
+
+function formatPrice(val) {
+  return `$${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatVolume(val) {
+  if (!val) return 'N/A';
+  return `$${(val / 1e9).toFixed(2)}B`;
+}
+
+function formatInstantData(data) {
+  let out = '';
+  
+  out += '═'.repeat(70) + '\n';
+  out += '              ₿ 即时分析数据 v5 (OKX)\n';
+  out += '═'.repeat(70) + '\n\n';
+  
+  out += `📅 ${data.timestamp}\n\n`;
+  
+  // Ticker 数据
+  if (data.ticker) {
+    const t = data.ticker;
+    out += '── 📈 24小时行情 ──\n';
+    out += `   当前价格: ${formatPrice(t.price)}\n`;
+    out += `   24h变化: ${t.priceChangePercent > 0 ? '+' : ''}${t.priceChangePercent.toFixed(2)}% (${formatPrice(t.priceChange)})\n`;
+    out += `   24h最高: ${formatPrice(t.high24h)} | 最低: ${formatPrice(t.low24h)}\n`;
+    out += `   24h成交: ${formatVolume(t.volume24h)}\n\n`;
+  }
+  
+  // 4小时K线
+  if (data.kline4h && data.kline4h.length > 0) {
+    out += '── 📊 4小时K线 (12根) ──\n';
+    for (const k of data.kline4h) {
+      const timeShort = k.time.slice(5, 16);
+      out += `   ${timeShort}: O${formatPrice(k.open)} H${formatPrice(k.high)} L${formatPrice(k.low)} C${formatPrice(k.close)}`;
+      if (k.fundingRate !== undefined) {
+        out += ` | 费率${(k.fundingRate * 100).toFixed(4)}%`;
+      }
+      if (k.openInterest !== undefined) {
+        out += ` | OI${(k.openInterest/1000).toFixed(1)}k`;
+      }
+      if (k.longShortRatio !== undefined) {
+        out += ` | 多空比${k.longShortRatio.toFixed(2)}`;
+      }
+      out += '\n';
+    }
+    out += '\n';
+  }
+  
+  // 1小时K线
+  if (data.kline1h && data.kline1h.length > 0) {
+    out += '── 📊 1小时K线 (4根) ──\n';
+    for (const k of data.kline1h) {
+      const timeShort = k.time.slice(5, 16);
+      out += `   ${timeShort}: O${formatPrice(k.open)} H${formatPrice(k.high)} L${formatPrice(k.low)} C${formatPrice(k.close)}`;
+      if (k.openInterest !== undefined) {
+        out += ` | OI${(k.openInterest/1000).toFixed(1)}k`;
+      }
+      out += '\n';
+    }
+    out += '\n';
+  }
+  
+  // 15分钟K线
+  if (data.kline15m && data.kline15m.length > 0) {
+    out += '── 📊 15分钟K线 (8根) ──\n';
+    for (const k of data.kline15m) {
+      const timeShort = k.time.slice(5, 16);
+      out += `   ${timeShort}: O${formatPrice(k.open)} H${formatPrice(k.high)} L${formatPrice(k.low)} C${formatPrice(k.close)}`;
+      if (k.quoteVolume !== undefined) {
+        out += ` | 成交${(k.quoteVolume/1e6).toFixed(1)}M`;
+      }
+      out += '\n';
+    }
+    out += '\n';
+  }
+  
+  out += '─'.repeat(70) + '\n';
+  out += '📊 数据源: OKX CLI + OKX API\n';
+  
+  return out;
+}
+
+// ========== CLI 入口 ==========
+
+function saveData(data, basePath) {
+  const scriptDir = __dirname;
+  const workspaceDir = basePath || path.resolve(scriptDir, '..', '..', '..');
+  const dataDir = path.join(workspaceDir, 'data');
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+  
+  // 使用时间戳作为文件名，避免覆盖
+  const timestamp = data.timestamp.replace(/[: ]/g, '-').slice(0, 19);
+  const filePath = path.join(dataDir, `instant-${timestamp}.json`);
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+  return filePath;
+}
+
+function parseArgs() {
+  const args = { json: false, save: false, proxy: null };
+  for (let i = 2; i < process.argv.length; i++) {
+    const arg = process.argv[i];
+    if (arg === '--json') args.json = true;
+    else if (arg === '--save') args.save = true;
+    else if (arg === '--proxy') args.proxy = process.argv[++i] || PROXY_DEFAULT;
+    else if (arg.startsWith('--proxy=')) args.proxy = arg.split('=')[1];
+  }
+  if (!args.proxy) args.proxy = PROXY_DEFAULT;
+  return args;
+}
+
+async function main() {
+  const args = parseArgs();
+  try {
+    const data = await getInstantData(args.proxy);
+    if (args.save) {
+      const savedPath = saveData(data);
+      console.log(`📁 数据已保存: ${savedPath}`);
+    }
+    if (args.json) {
+      console.log(JSON.stringify(data, null, 2));
+    } else {
+      console.log(formatInstantData(data));
+    }
+  } catch (e) {
+    console.error('错误:', e.message);
+    process.exit(1);
+  }
+}
+
+module.exports = { getInstantData, formatInstantData, saveData };
+
+if (require.main === module) {
+  main();
+}
