@@ -44,11 +44,24 @@ metadata:
 ├── USER.md                     ← 服务对象信息
 │
 ├── tasks/                      ← 任务规则文件（核心）
-│   ├── daily-report.md         ← 日报任务执行流程
+│   ├── daily-report-stage1.md  ← 日报阶段一：数据获取
+│   ├── daily-report-stage2.md  ← 日报阶段二：市场分析
+│   ├── daily-report-stage3.md  ← 日报阶段三：仓位管理
+│   ├── daily-report-stage4.md  ← 日报阶段四：警报管理
 │   ├── instant-analysis.md     ← 即时分析执行流程
+│   ├── instant-analysis-stage1.md ← 即时分析阶段一
+│   ├── execute-trade.md        ← 实盘交易执行流程
 │   ├── set-alert.md            ← 警报创建流程
 │   ├── alert-management.md     ← 警报维护流程
-│   └── alert-debug.md          ← 警报调试报告流程
+│   ├── alert-debug.md          ← 警报调试报告流程
+│   └── sync-positions.md       ← 仓位同步流程
+│
+├── scripts/                    ← 辅助脚本
+│   ├── sync_positions.js       ← 仓位同步脚本
+│   ├── sync_positions_full.js  ← 仓位全量同步脚本
+│   ├── multi_timeframe_fib.py  ← 斐波那契分析
+│   ├── okx-proxy.sh            ← OKX CLI wrapper
+│   └── test_binance_api.py     ← API 测试脚本
 │
 ├── skills/                     ← 子技能
 │   ├── btc-alert/              ← 警报器系统
@@ -57,20 +70,27 @@ metadata:
 │   │   └── rules/              ← 警报规则文件目录
 │   │   └── rules-archive/      ← 已归档规则目录
 │   │
-│   └── btc-market-lite/        ← 市场数据获取
+│   ├── btc-market-lite/        ← 市场数据获取
 │   │   ├── SKILL.md            ← 数据源说明
 │   │   └── scripts/
 │   │       ├── api.js          ← 数据 API 封装
 │   │       ├── get_enhanced_analysis.js  ← 日报数据获取
-│   │       └── get_instant_data.js       ← 即时数据获取
+│   │       ├── get_instant_data.js       ← 即时数据获取
+│   │       └── get_fear_greed.js         ← 恐惧贪婪指数
+│   │
+│   └── self-improvement/       ← 自我改进技能
+│       └── SKILL.md            ← 错误学习、经验积累
 │
 ├── active/                     ← 活跃交易周期（运行时生成）
 │   └── cycle-YYYYMMDD-XXX/
 │       ├── trade-suggestions.json  ← 交易建议文件
+│       ├── positions.json          ← 实盘仓位记录
+│       ├── data-context/           ← 数据清单
 │       └── reports/                ← 本周期报告
 │
 ├── archived/                   ← 已归档周期（运行时生成）
 ├── data/                       ← 原始数据（运行时生成）
+│   └── SCHEMA.md               ← 数据结构说明
 └── logs/                       ← 执行日志（运行时生成）
 ```
 
@@ -80,11 +100,12 @@ metadata:
 
 | 指令特征 | 任务类型 | 规则文件 |
 |---------|---------|---------|
-| `[SPAWN_DAILY_REPORT]` 前缀 | 日报任务 | `tasks/daily-report.md` |
-| `[SPAWN_INSTANT_ANALYSIS]` 前缀 | 即时分析 | `tasks/instant-analysis.md` |
+| `[SPAWN_DAILY_REPORT]` 前缀 | 日报任务 | `tasks/daily-report-stage1.md` |
+| `[SPAWN_INSTANT_ANALYSIS]` 前缀 | 即时分析 | `tasks/instant-analysis-stage1.md` |
 | "设定市场警报" | 警报创建 | `tasks/set-alert.md` |
 | "警报调试报告" | 警报调试 | `tasks/alert-debug.md` |
-| 定时触发（无前缀） | 日报任务 | `tasks/daily-report.md` |
+| "执行仓位同步" | 仓位同步 | `tasks/sync-positions.md` |
+| 定时触发（无前缀） | 日报任务 | `tasks/daily-report-stage1.md` |
 | 其他对话 | 正常聊天 | 参考 `AGENTS.md` |
 
 **⚠️ SPAWN 触发机制**：
@@ -100,19 +121,47 @@ sessions_spawn(
 )
 ```
 
+**⚠️ 分阶段执行机制（v5.0）**：
+
+日报任务现在拆分为四个阶段，避免单个会话上下文过长：
+
+```
+阶段一 → 数据获取 → 返回消息 → 主会话 SPAWN 阶段二
+阶段二 → 市场分析 → 返回消息 → 主会话 SPAWN 阶段三
+阶段三 → 仓位管理 → 返回消息 → 主会话 SPAWN 阶段四
+阶段四 → 警报管理 → 完成
+```
+
+每个阶段完成后必须返回固定格式的消息，主会话据此 spawn 下一阶段。
+
+**子会话无法直接 spawn 另一个子会话**（系统限制），所以必须返回消息让主会话接手。
+
 ### 4. 核心工作流
 
-#### 日报流程（定时触发）
+#### 日报流程（分阶段执行）
 
 ```
-定时触发 → SPAWN新会话 → 检查周期 → 获取历史报告
+定时触发 → SPAWN新会话 → 阶段一：数据获取
     ↓
-获取市场数据 → 分析撰写 → 保存报告
+获取市场数据 → 保存数据清单 → 返回消息
     ↓
-管理交易建议 → 归档检查 → 发送飞书
+主会话 SPAWN 阶段二 → 阶段二：市场分析
     ↓
-记录日志 → 警报器管理
+读取历史报告 → 分析撰写 → 保存报告 → 返回消息
+    ↓
+主会话 SPAWN 阶段三 → 阶段三：仓位管理
+    ↓
+检查交易建议 → 执行开仓/平仓 → 更新建议状态 → 返回消息
+    ↓
+主会话 SPAWN 阶段四 → 阶段四：警报管理
+    ↓
+评估现有警报 → 归档过期 → 创建新警报 → 发送飞书 → 完成
 ```
+
+**分阶段设计原因**：
+- 每个阶段独立上下文，避免累积干扰
+- 数据获取、分析、执行、警报各自专注
+- 主会话只负责路由，不参与具体任务
 
 #### 即时分析流程（警报触发）
 
@@ -121,7 +170,7 @@ sessions_spawn(
     ↓
 获取24h历史 → 分析撰写 → 保存报告
     ↓
-检查建议触发 → 归档检查 → 发送飞书
+检查建议触发 → 执行仓位检查 → 归档检查 → 发送飞书
     ↓
 记录日志 → 警报器管理
 ```
@@ -325,15 +374,23 @@ module.exports = {
 
 | 文档 | 内容 |
 |------|------|
-| `AGENTS.md` | 任务路由、文件结构、周期系统 |
-| `tasks/daily-report.md` | 日报任务详细流程（报告结构、建议管理） |
+| `AGENTS.md` | 任务路由、文件结构、周期系统、分阶段执行说明 |
+| `tasks/daily-report-stage1.md` | 日报阶段一：数据获取流程 |
+| `tasks/daily-report-stage2.md` | 日报阶段二：市场分析流程 |
+| `tasks/daily-report-stage3.md` | 日报阶段三：仓位管理流程 |
+| `tasks/daily-report-stage4.md` | 日报阶段四：警报管理流程 |
 | `tasks/instant-analysis.md` | 即时分析详细流程 |
+| `tasks/instant-analysis-stage1.md` | 即时分析阶段一流程 |
+| `tasks/execute-trade.md` | 实盘交易执行流程 |
+| `tasks/sync-positions.md` | 仓位同步流程 |
 | `tasks/set-alert.md` | 警报创建规范、规则示例 |
 | `tasks/alert-management.md` | 警报维护流程 |
 | `skills/btc-alert/SKILL.md` | 警报器技能说明 |
 | `skills/btc-market-lite/SKILL.md` | 数据源、API说明 |
+| `skills/self-improvement/SKILL.md` | 自我改进技能说明 |
+| `data/SCHEMA.md` | 数据结构说明 |
 | `skills/btc-alert/engine.js` | 警报器引擎源码 |
 
 ---
 
-📈 七月 BTC 分析技能 v1.0
+📈 七月 BTC 分析技能 v5.0
