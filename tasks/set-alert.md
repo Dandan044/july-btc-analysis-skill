@@ -2,6 +2,57 @@
 
 当你需要"设定市场警报"时，按以下流程执行：
 
+## 0. ⚠️ 先测试数据获取逻辑（必须）
+
+**在编写警报规则之前，必须先验证数据获取逻辑可用！**
+
+### 0.1 执行步骤
+
+1. 根据警报需求，确定需要调用的 API 方法（如 `getOKXTicker`、`getOKXKlines`、`get24hVolume` 等）
+2. **手动调用一次**，检查返回数据：
+   - 数据是否成功返回？
+   - 数据格式是否符合预期？
+   - 数值范围是否合理？（如成交额应该是几亿级别，不是几万）
+
+### 0.2 测试方式
+
+使用 node 命令直接测试：
+
+```bash
+node -e "
+const api = require('./skills/btc-market-lite/scripts/api');
+async function test() {
+  const ticker = await api.getOKXTicker('BTC');
+  console.log('价格:', ticker.price);
+  console.log('change1h:', ticker.change1h);
+  console.log('volume24h:', ticker.volume24h);
+}
+test().catch(console.error);
+"
+```
+
+### 0.3 数据合理性检查
+
+| 数据类型 | 合理范围示例 | 异常情况（需排查） |
+|---------|-------------|-------------------|
+| BTC 价格 | $60,000-$100,000 | 0.01 或 null |
+| 24h成交额 | $300M-$500M | $0.01M |
+| K线成交量 | 百万级 USDT | 几十 USDT |
+| change1h/change24h | ±0.1% ~ ±5% | null 或 60000% |
+
+### 0.4 发现问题时
+
+**数据异常时，必须先修复 `skills/btc-market-lite/scripts/api.js`，再继续创建警报。**
+
+常见问题：
+- API 字段映射错误（如 OKX 返回数组 index 5/6 混淆）
+- 数据单位错误（BTC vs USDT）
+- limit 参数超出 API 限制
+
+**不要在未验证数据的情况下直接创建规则文件！**
+
+---
+
 ## 1. 理解警报需求
 
 分析用户或自身分析发现的监控需求，确定：
@@ -93,8 +144,8 @@ module.exports = {
   },
 
   lifetime() {
-    // 返回 'active' / 'expired' / 'completed'
-    const today = new Date().toISOString().split('T')[0];
+    // ⚠️ 必须使用 api.getLocalDate() 而非 new Date().toISOString()（后者返回UTC日期，UTC+8下会差一天）
+    const today = api.getLocalDate();
     return today === CREATED_DATE ? 'active' : 'expired';
   }
 };
@@ -102,29 +153,119 @@ module.exports = {
 
 ## 3. 必须遵守的规则
 
-### 3.1 价格警报数量限制（必须）
+### 3.1 check() 日志输出规范（必须）
 
-为防止警报冗余，价格类警报最多同时存在：
+**每次心跳检查时，`check()` 的 console.log 必须包含以下三部分信息：**
+
+#### ① API 数据来源说明
+
+明确表示使用什么 API 获取了什么数据：
+
+```
+格式：[API] <数据源>获取<数据描述>
+示例：[API] OKX获取BTC当前价格 | [API] CryptoCompare获取4根15分钟K线 | [API] OKX获取1H多空比数据
+```
+
+#### ② 触发进度可视化
+
+当前值、阈值、触发状态组成可视化触发进程：
+
+```
+格式：[进度] <规则名> | <当前值描述> | <阈值描述> | 触发: <true/false>
+
+示例：
+- 价格警报：[进度] 关键支撑跌破-77500 | 当前价: $78938 | 目标: $77500 | 触发: false
+- 多空比警报：[进度] 多空比恶化-0.65 | 当前比: 0.67 | 阈值: 0.65 | 触发: false
+- 延迟触发：[进度] 延迟确认突破 | 突破已持续: 15分钟 | 等待: 30分钟 | 触发: false
+- 定时器：[进度] 计划入场定时器 | 剩余时间: 2小时30分 | 触发时间: 14:00 | 触发: false
+```
+
+#### ③ 设立警报的来源依据
+
+记录该警报设立的原因，来源于哪份报告的什么观点：
+
+```
+格式：[来源] <报告类型+日期>: "<核心观点摘要>"
+示例：[来源] 04-22 21:00日报: "longShortRatio恶化至0.67，若继续恶化至0.65以下则空头挤压大概率爆发"
+```
+
+#### 完整示例
+
+```javascript
+async check() {
+  if (Date.now() - this.lastTriggered < COOLDOWN_MS) return false;
+
+  try {
+    const ticker = await api.getTicker('BTC');
+    const currentPrice = ticker.price;
+    const triggered = currentPrice < TARGET_PRICE;
+
+    console.log(`[🔍警报检查] [API] CryptoCompare获取BTC实时价格 | [进度] ${this.name} | 当前价: $${currentPrice} | 目标: $${TARGET_PRICE} | 触发: ${triggered} | [来源] 04-22 21:51即时分析: "$77,500是关键支撑，跌破将破坏4H上升结构"`);
+    
+    return triggered;
+  } catch (error) {
+    console.error('[❌警报检查错误]', error.message);
+    throw error;
+  }
+}
+```
+
+**日志输出效果：**
+```
+[🔍警报检查] [API] CryptoCompare获取BTC实时价格 | [进度] 关键支撑跌破警报-77500 | 当前价: $78938 | 目标: $77500 | 触发: false | [来源] 04-22 21:51即时分析: "$77,500是关键支撑，跌破将破坏4H上升结构"
+```
+
+#### 延迟触发警报的特殊格式
+
+延迟触发警报需要额外显示等待进度：
+
+```javascript
+async check() {
+  // ... 检测逻辑
+  
+  if (ticker.price >= TARGET_PRICE) {
+    if (!this.breakthroughTime) {
+      this.breakthroughTime = Date.now();
+    }
+    
+    const elapsedMs = Date.now() - this.breakthroughTime;
+    const elapsedMins = Math.floor(elapsedMs / 60000);
+    const targetMins = DELAY_MS / 60000;
+    
+    console.log(`[🔍警报检查] [API] CryptoCompare获取BTC实时价格 | [进度] ${this.name} | 突破已持续: ${elapsedMins}分钟 | 等待确认: ${targetMins}分钟 | 当前价: $${ticker.price} | 目标: $${TARGET_PRICE} | 触发: ${elapsedMins >= targetMins} | [来源] 04-22 日报: "突破需确认，避免假突破"`);
+  }
+}
+```
+
+### 3.2 价格警报数量限制（必须）
+
+**⚠️ 已废弃「上方1个/下方1个」限制，改为多价位监控模式。**
+
+**新限制规则：**
 
 | 类型 | 最大数量 | 说明 |
 |------|---------|------|
-| 支撑位跌破警报 | **1 个** | 只监控最接近当前价格的关键支撑 |
-| 阻力位突破警报 | **1 个** | 只监控最接近当前价格的关键阻力 |
+| **价格价位** | **≤6 个** | 单个规则文件可包含多个价位（上方/下方不限） |
+| 非价格警报 | ≤2 个 | 独立规则文件 |
+
+**多价位监控的优势：**
+
+1. 一次警报配置包含所有关键价位
+2. 不需要在工作流中筛选价位
+3. 单次触发可传递组合信息（多个价位同时被触发）
+4. 减少规则文件数量
 
 **新增警报时的处理逻辑**：
 
-1. 检查 `skills/btc-alert/rules/` 目录下是否已有同类型价格警报
-2. 若已有，评估新旧警报的目标位与当前价格的距离：
-   - 保留更接近当前价格的警报（更紧迫）
-   - 归档较远的警报（移动到 `rules/archive/`）
-3. 若新警报目标位更接近，则替换旧警报
+1. 检查 `skills/btc-alert/rules/` 目录下是否已有价格类警报
+2. 若已有，评估是否需要更新价位列表：
+   - 读取现有规则的价位配置
+   - 对比新旧价位的有价值程度
+   - 若新分析提供了更有价值的价位，更新规则文件
+   - 若旧价位仍有意义但超出6个限制，保留最有价值的 ≤6 个
+3. 确保总价位不超过6个
 
-**示例**：
-- 当前价格 $71,692，已有支撑警报 $70,500（距离 $1,192）
-- 新增支撑警报 $69,500（距离 $2,192）
-- 判断：$70,500 更接近 → 保留 $70,500，不创建 $69,500
-
-**例外**：非价格类警报（多空比、交易量等）不受此限制。
+**例外**：非价格类警报（交易量、持仓量等）不受价位限制，但总数 ≤2 个。
 
 ### 3.2 禁止使用恐惧贪婪指数作为警报触发条件（必须）
 
@@ -135,7 +276,62 @@ module.exports = {
 
 ⚠️ 已存在的 FGI 警报必须删除。警报设计时禁止包含 FGI 相关的触发逻辑。
 
-### 3.3 创造性警报设计（必须）
+### 3.3 连续数据获取规范（必须）
+
+**⚠️ 核心原则：使用K线区间数据，而非瞬时价格。**
+
+**问题背景：**
+
+警报器每隔 N 分钟检查一次。如果使用瞬时价格：
+- 价格可能在两次检查之间短暂突破后拉回
+- 警报器无法感知瞬时突破
+- 导致错过重要的触发信号
+
+**正确做法：获取K线片段，从区间高低价判断触发**
+
+```javascript
+// ❌ 错误：获取瞬时价格
+async check() {
+  const ticker = await api.getTicker('BTC');
+  return ticker.price >= TARGET_PRICE; // 单点比较，可能漏掉瞬时突破
+}
+
+// ✅ 正确：获取K线片段
+async check() {
+  // 获取覆盖检查间隔的K线（如3分钟间隔 → 获取3根1分钟K线）
+  const klines = await api.getKlines('BTC', '1m', 3);
+  
+  // 计算区间最高最低价
+  const periodHigh = Math.max(...klines.map(k => k.high));
+  const periodLow = Math.min(...klines.map(k => k.low));
+  
+  // 从区间判断是否曾到达目标位
+  return periodHigh >= TARGET_PRICE; // 或 periodLow <= TARGET_PRICE
+}
+```
+
+**数据获取规范：**
+
+| 数据类型 | 错误方式 | 正确方式 | API方法 |
+|---------|---------|---------|---------|
+| **价格** | `getTicker()` 单点 | `getKlines()` K线区间 | `getKlines('BTC', '1m', N)` |
+| **持仓量OI** | 单点数值 | OI历史数据 | OKX `/rubik/stat/contracts/open-interest-volume` |
+| **交易量** | 单点数值 | 多根K线累计 | K线volume字段累加 |
+| **多空比** | 单点数值 | 多时间点采样 | OKX `/rubik/stat/contracts/long-short-account-ratio` |
+| **Taker买卖比** | 单点数值 | 多时间点采样 | OKX `/rubik/stat/taker-volume` |
+
+**K线数量计算：**
+
+- 检查间隔 = N 分钟
+- 获取 N 根 1分钟K线（覆盖整个间隔）
+- 或获取 ceil(N/5) 根 5分钟K线
+
+**示例：**
+- interval = 3分钟 → 获取 3 根 1m K线
+- interval = 5分钟 → 获取 5 根 1m K线 或 1 根 5m K线
+- interval = 15分钟 → 获取 15 根 1m K线 或 3 根 5m K线
+
+### 3.4 创造性警报设计（必须）
 
 **不要局限于简单的"价格到达目标位就触发"！** 警报器支持多种灵活的触发方式：
 
@@ -425,7 +621,7 @@ module.exports = {
   },
 
   lifetime() {
-    const today = new Date().toISOString().split('T')[0];
+    const today = api.getLocalDate();
     return today === CREATED_DATE ? 'active' : 'expired';
   }
 };
@@ -536,7 +732,7 @@ module.exports = {
   },
 
   lifetime() {
-    const today = new Date().toISOString().split('T')[0];
+    const today = api.getLocalDate();
     const created = new Date(CREATED_DATE);
     const now = new Date(today);
     const daysDiff = Math.floor((now - created) / (1000 * 60 * 60 * 24));
@@ -783,7 +979,7 @@ module.exports = {
   },
 
   lifetime() {
-    const today = new Date().toISOString().split('T')[0];
+    const today = api.getLocalDate();
     return today === CREATED_DATE ? 'active' : 'expired';
   }
 };
@@ -828,3 +1024,247 @@ module.exports = {
 3. 是否只盯着价格而忽略了其他信号？
 
 **如果连续多次只设定价格警报，说明思维已固化，需要主动打破。**
+
+---
+
+## 12. ⭐ 多价位监控规则模板（推荐）
+
+**单规则监控多个价位，一次触发传递组合信息。**
+
+**核心特性：**
+- 单个规则文件可包含 ≤6 个价位
+- 使用K线区间数据判断触发（而非瞬时价格）
+- 单次触发传递所有被触发的价位信息（组合触发）
+- 避免多次触发导致的冗余即时分析
+
+**完整模板：**
+
+```javascript
+/**
+ * 多价位监控警报
+ * 监控多个关键价位，使用K线区间数据捕捉瞬时突破
+ * 单次触发传递组合信息
+ */
+
+const api = require('../../btc-market-lite/scripts/api');
+const { spawn } = require('child_process');
+
+const CREATED_DATE = '2026-04-23';
+const COOLDOWN_MS = 60 * 60 * 1000; // 1小时冷却
+
+// ⭐ 多价位配置（最多6个）
+// 每个价位包含：价格、类型（resistance/support）、标签、触发动作、优先级
+const PRICE_LEVELS = [
+  { price: 79443, type: 'resistance', label: '旗形顶部', action: '做多B', priority: 'high' },
+  { price: 80000, type: 'resistance', label: '整数关口', action: null, priority: 'low' },
+  { price: 81500, type: 'resistance', label: '前高压力', action: '趋势反转', priority: 'medium' },
+  { price: 77500, type: 'support', label: '关键支撑', action: '情景C', priority: 'high' },
+  { price: 74980, type: 'support', label: '情景C目标', action: '止盈', priority: 'medium' },
+  { price: 73596, type: 'support', label: '深度支撑', action: null, priority: 'medium' }
+];
+
+module.exports = {
+  name: '多价位监控警报',
+  interval: 3 * 60 * 1000,
+  lastTriggered: 0,
+  
+  // ⭐ 当前触发的价位组合（供 collect() 使用）
+  currentTriggeredLevels: [],
+  
+  // 触发历史记录（可选，用于调试）
+  triggeredHistory: [],
+
+  async check() {
+    // 冷却检查
+    if (Date.now() - this.lastTriggered < COOLDOWN_MS) {
+      return false;
+    }
+
+    try {
+      // ⭐ 获取K线片段（而非瞬时价格）
+      // 获取覆盖检查间隔的K线数量：interval=3分钟 → 3根1分钟K线
+      const klines = await api.getKlines('BTC', '1m', 3);
+      
+      // 计算区间高低价
+      const periodHigh = Math.max(...klines.map(k => k.high));
+      const periodLow = Math.min(...klines.map(k => k.low));
+      const latestPrice = klines[klines.length - 1].close;
+
+      // ⭐ 批量检查所有价位
+      const triggeredLevels = [];
+      
+      for (const level of PRICE_LEVELS) {
+        const wasTriggered = 
+          (level.type === 'resistance' && periodHigh >= level.price) ||
+          (level.type === 'support' && periodLow <= level.price);
+        
+        if (wasTriggered) {
+          triggeredLevels.push(level);
+        }
+      }
+
+      // ⭐ 组合触发：如果有任何价位被触发，返回true
+      if (triggeredLevels.length > 0) {
+        // 存储触发的价位组合，供 collect() 使用
+        this.currentTriggeredLevels = triggeredLevels;
+        
+        // 记录日志（组合信息）
+        const levelStr = triggeredLevels.map(l => `$${l.price}(${l.label})`).join(', ');
+        console.log(`[🔍警报检查] [API] CryptoCompare获取BTC 3分钟K线 | [进度] ${this.name} | 区间: $${periodLow.toFixed(0)}-$${periodHigh.toFixed(0)} | 当前: $${latestPrice.toFixed(0)} | 触发价位: ${levelStr} | 触发: true`);
+        
+        return true;
+      }
+
+      // 未触发日志
+      console.log(`[🔍警报检查] [API] CryptoCompare获取BTC 3分钟K线 | [进度] ${this.name} | 区间: $${periodLow.toFixed(0)}-$${periodHigh.toFixed(0)} | 当前: $${latestPrice.toFixed(0)} | 触发: false`);
+      
+      return false;
+    } catch (error) {
+      console.error('[❌警报检查错误]', error.message);
+      throw error;
+    }
+  },
+
+  async collect() {
+    try {
+      // ⭐ 传递组合触发信息
+      const triggeredLevels = this.currentTriggeredLevels || [];
+      
+      const ticker = await api.getTicker('BTC');
+      const klines15m = await api.getKlines('BTC', '15m', 8);
+      
+      // 尝试获取OKX数据（如果可用）
+      let oiData = null;
+      let takerData = null;
+      try {
+        oiData = await api.getOKXOpenInterest ? await api.getOKXOpenInterest() : null;
+        takerData = await api.getOKXTakerRatio ? await api.getOKXTakerRatio() : null;
+      } catch (e) {
+        console.log('[数据收集] OKX数据获取失败，继续使用其他数据');
+      }
+
+      return {
+        alertTime: new Date().toISOString(),
+        currentPrice: ticker.price,
+        
+        // ⭐ 组合触发信息（关键字段）
+        triggeredLevels: triggeredLevels.map(l => ({
+          price: l.price,
+          type: l.type,
+          label: l.label,
+          action: l.action,
+          priority: l.priority
+        })),
+        
+        // 区间信息（证明触发依据）
+        periodRange: {
+          high: Math.max(...klines15m.slice(-3).map(k => k.high)),
+          low: Math.min(...klines15m.slice(-3).map(k => k.low))
+        },
+        
+        // 其他市场数据
+        priceChange: {
+          '1h': ticker.change1h,
+          '24h': ticker.change24h
+        },
+        openInterest: oiData?.currentOI,
+        takerBuyRatio: takerData?.currentRatio,
+        klines15m: klines15m.map(k => ({
+          time: k.datetime,
+          open: k.open,
+          high: k.high,
+          low: k.low,
+          close: k.close,
+          volume: k.volume
+        })),
+        
+        alertType: '多价位触发',
+        significance: this.buildSignificance(triggeredLevels)
+      };
+    } catch (error) {
+      console.error('[❌数据收集错误]', error.message);
+      throw error;
+    }
+  },
+
+  // ⭐ 构建组合触发的重要性描述
+  buildSignificance(levels) {
+    if (levels.length === 0) return '无触发';
+    
+    const actions = levels.filter(l => l.action).map(l => l.action);
+    const labels = levels.map(l => `${l.label}($${l.price})`);
+    
+    if (levels.length === 1) {
+      const l = levels[0];
+      return l.action 
+        ? `价格触及${l.label}($${l.price})，触发动作: ${l.action}`
+        : `价格触及${l.label}($${l.price})`;
+    }
+    
+    // 多价位组合触发
+    const actionStr = actions.length > 0 ? `，触发动作: ${actions.join(' / ')}` : '';
+    return `价格区间跨越多个关键位: ${labels.join('、')}${actionStr}`;
+  },
+
+  async trigger(data) {
+    const now = new Date().toISOString();
+    const jobName = `alert-multi-${Date.now()}`;
+    const message = `[SPAWN_INSTANT_ANALYSIS]${JSON.stringify(data)}`;
+
+    spawn('openclaw', [
+      'cron', 'add',
+      '--agent', 'july',
+      '--session', 'isolated',
+      '--at', now,
+      '--message', message,
+      '--name', jobName,
+      '--delete-after-run',
+      '--no-deliver'
+    ], {
+      detached: true,
+      stdio: 'ignore'
+    });
+
+    // 记录触发历史
+    this.triggeredHistory.push({
+      time: new Date().toISOString(),
+      levels: data.triggeredLevels
+    });
+    
+    console.log(`[警报触发] 已创建即时分析任务: ${jobName}，触发价位: ${data.triggeredLevels.length}个`);
+    this.lastTriggered = Date.now();
+    
+    // 清空当前触发记录
+    this.currentTriggeredLevels = [];
+  },
+
+  lifetime() {
+    const today = api.getLocalDate();
+    return today === CREATED_DATE ? 'active' : 'expired';
+  }
+};
+```
+
+**组合触发说明：**
+
+| 场景 | 区间示例 | 触发价位 | collect返回 |
+|------|---------|---------|------------|
+| 单价位触发 | $78,000-$78,500 | 仅$77,500(支撑跌破) | `triggeredLevels: [{price:77500,...}]` |
+| 多价位组合 | $77,000-$79,500 | $77,500+$74,980+$79,443 | `triggeredLevels: [{...},{...},{...}]` |
+| 无触发 | $78,200-$78,400 | 无 | 不触发 |
+
+**即时分析如何处理组合信息：**
+
+阶段二收到 `triggeredLevels` 数组后：
+- 单价位 → 按原逻辑处理
+- 多价位 → 综合判断优先级：
+  - `priority: 'high'` 且有 `action` → 优先执行
+  - 多个高位价位同时触发 → 可能意味着剧烈波动，需谨慎
+
+---
+
+**⚠️ 多价位规则命名建议：**
+
+使用格式：`YYYY-MM-DD-multi-price.js`
+
+例如：`2026-04-23-multi-price.js`
