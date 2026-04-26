@@ -20,6 +20,8 @@ metadata:
 
 ## 🚀 快速入门
 
+**首次部署请务必阅读 `deployment.md`**，包含完整的环境配置指南。
+
 ### 1. 首先阅读的文档
 
 安装此技能后，按以下顺序阅读：
@@ -154,7 +156,7 @@ sessions_spawn(
     ↓
 主会话 SPAWN 阶段四 → 阶段四：警报管理
     ↓
-评估现有警报 → 归档过期 → 创建新警报 → 发送飞书 → 完成
+评估现有警报 → 归档过期 → 创建新警报 → 完成
 ```
 
 **分阶段设计原因**：
@@ -169,7 +171,7 @@ sessions_spawn(
     ↓
 获取24h历史 → 分析撰写 → 保存报告
     ↓
-检查建议触发 → 执行仓位检查 → 归档检查 → 发送飞书
+检查建议触发 → 执行仓位检查 → 归档检查
     ↓
 记录日志 → 警报器管理
 ```
@@ -208,17 +210,6 @@ pm2 save
 在 `skills/btc-market-lite/scripts/get_enhanced_analysis.js` 中配置：
 ```javascript
 const PROXY_DEFAULT = 'http://127.0.0.1:7890';
-```
-
-3. **飞书配置**
-
-在 `credentials.json` 中配置：
-```json
-{
-  "feishu": {
-    "targetOpenId": "ou_xxx"
-  }
-}
 ```
 
 ### 可选部署
