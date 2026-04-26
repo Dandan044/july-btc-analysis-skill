@@ -16,14 +16,6 @@
 
 ## 一、安装技能
 
-### 方式一：通过 ClawHub 安装（推荐）
-
-```bash
-openclaw skill install july-btc-analysis
-```
-
-### 方式二：手动安装
-
 将技能目录放置到智能体的 skills 目录下：
 
 ```bash

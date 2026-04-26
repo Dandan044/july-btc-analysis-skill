@@ -16,10 +16,7 @@
 - 定时任务创建
 
 ```bash
-# 通过 ClawHub 安装
-openclaw skill install july-btc-analysis
-
-# 或查看部署指南
+# 查看部署指南
 cat deployment.md
 ```
 
@@ -296,11 +293,11 @@ cat deployment.md
 ### ① 安装技能
 
 ```bash
-# ClawHub 安装（推荐）
-clawhub install july-btc-analysis
-
-# 或者从 Git 克隆
+# 从 Git 克隆
 git clone https://github.com/Dandan044/july-btc-analysis-skill.git
+
+# 将技能目录移动到智能体的 skills 目录下
+mv july-btc-analysis-skill <智能体工作区>/skills/
 ```
 
 ### ② 启动警报器引擎
