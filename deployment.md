@@ -1,6 +1,6 @@
 # deployment.md - 部署配置指南
 
-此智能体在新环境中部署时，需要配置以下服务和定时任务。
+此技能在智能体中安装使用时，需要配置以下服务。
 
 ---
 
@@ -14,65 +14,33 @@
 
 ---
 
-## 一、克隆与注册智能体
+## 一、安装技能
 
-### 1. 克隆仓库
-
-```bash
-cd ~/.openclaw
-git clone git@github.com:Dandan044/july-btc-analyzer.git
-```
-
-### 2. 注册智能体信息
-
-七月是独立 OpenClaw 智能体，需要在 `~/.openclaw/openclaw.json` 中注册。
-
-找到 `agents` 数组，添加七月配置：
-
-```json
-{
-  "agents": [
-    // ... 其他智能体 ...
-    {
-      "id": "july",
-      "name": "july",
-      "workspace": "<克隆路径>",
-      "agentDir": "<克隆路径>/agent",
-      "model": "bailian/glm-5",
-      "identity": {
-        "name": "七月",
-        "theme": "加密货币分析师智能体",
-        "emoji": "📈"
-      },
-      "subagents": {
-        "allowAgents": ["july"]
-      }
-    }
-  ]
-}
-```
-
-**⚠️ 必填项**：
-| 字段 | 说明 |
-|------|------|
-| `workspace` | 克隆目录的绝对路径，如 `/home/user/.openclaw/july-btc-analyzer` |
-| `agentDir` | 智能体 agent 子目录，通常为 `<workspace>/agent` |
-| `model` | 推荐使用 `bailian/glm-5` 或其他高上下文模型 |
-
-### 3. 创建 agent 目录结构
+### 方式一：通过 ClawHub 安装（推荐）
 
 ```bash
-mkdir -p <workspace>/agent
-mkdir -p <workspace>/logs
-mkdir -p <workspace>/skills/btc-alert/rules
-mkdir -p <workspace>/skills/btc-alert/rules-archive
+openclaw skill install july-btc-analysis
 ```
+
+### 方式二：手动安装
+
+将技能目录放置到智能体的 skills 目录下：
+
+```bash
+# 目标路径示例
+<智能体工作区>/skills/july-btc-analysis/
+```
+
+**⚠️ 注意**：
+- 此技能是**技能包版本**，不包含私人配置
+- 如需完整版（含私人关系、飞书配置等），请参考七月智能体仓库：
+  `git@github.com:Dandan044/july-btc-analyzer.git`
 
 ---
 
 ## 二、代理配置
 
-国内网络访问 OKX API 需要代理。七月采用**环境变量统一配置**方式。
+国内网络访问 OKX API 需要代理。此技能采用**环境变量统一配置**方式。
 
 ### 代理环境变量
 
@@ -115,12 +83,14 @@ source ~/.bashrc
 
 #### ecosystem.config.js
 
+在技能目录下创建或编辑 `ecosystem.config.js`：
+
 ```javascript
 module.exports = {
   apps: [{
     name: 'btc-alert',
-    script: './skills/btc-alert/engine.js',
-    cwd: '<克隆路径>',  // ⚠️ 替换为实际绝对路径
+    script: './skills/july-btc-analysis/skills/btc-alert/engine.js',
+    cwd: '<智能体工作区>',  // ⚠️ 替换为智能体工作区绝对路径
     
     autorestart: true,
     watch: false,
@@ -149,13 +119,14 @@ module.exports = {
 **⚠️ 必填项**：
 | 字段 | 说明 |
 |------|------|
-| `cwd` | 克隆目录的绝对路径 |
+| `cwd` | 智能体工作区的绝对路径 |
+| `script` | 警报引擎路径，根据技能安装位置调整 |
 | `http_proxy` 端口 | 代理端口，与系统代理一致 |
 
 #### 启动命令
 
 ```bash
-cd <克隆路径>
+cd <智能体工作区>
 npm install
 pm2 start ecosystem.config.js
 pm2 save
@@ -205,13 +176,12 @@ demo = true
 
 **⚠️ 安全提醒**：
 - 此文件包含敏感凭证，**切勿提交到 Git**
-- 已在项目 `.gitignore` 中排除
 
 ### 验证 OKX CLI
 
 ```bash
 # 使用代理 wrapper（国内网络）
-./scripts/okx-proxy.sh --profile live account balance
+./skills/july-btc-analysis/scripts/okx-proxy.sh --profile live account balance
 
 # 或直接使用（国外网络）
 okx --profile live account balance
@@ -223,13 +193,13 @@ okx --profile live account balance
 
 ### 日报任务（Cron Jobs）
 
-使用 OpenClaw cron 系统配置每天 9:00 和 21:00 的日报任务。
+使用 OpenClaw cron 系统配置日报任务触发时间。
 
 #### 早间日报（9:00 GMT+8）
 
 ```json
 {
-  "name": "july-btc-morning",
+  "name": "<智能体ID>-btc-morning",
   "schedule": {
     "kind": "cron",
     "expr": "0 9 * * *",
@@ -238,7 +208,7 @@ okx --profile live account balance
   "sessionTarget": "isolated",
   "payload": {
     "kind": "agentTurn",
-    "agentId": "july",
+    "agentId": "<智能体ID>",
     "message": "[SPAWN_DAILY_REPORT]执行比特币技术分析日报：获取BTC价格、恐惧指数、技术指标数据，进行技术分析，生成报告并发送",
     "thinking": "high",
     "timeoutSeconds": 0
@@ -253,7 +223,7 @@ okx --profile live account balance
 
 ```json
 {
-  "name": "july-btc-evening",
+  "name": "<智能体ID>-btc-evening",
   "schedule": {
     "kind": "cron",
     "expr": "0 21 * * *",
@@ -262,7 +232,7 @@ okx --profile live account balance
   "sessionTarget": "isolated",
   "payload": {
     "kind": "agentTurn",
-    "agentId": "july",
+    "agentId": "<智能体ID>",
     "message": "[SPAWN_DAILY_REPORT]执行比特币技术分析日报：获取BTC价格、恐惧指数、技术指标数据，进行技术分析，生成报告并发送",
     "thinking": "high",
     "timeoutSeconds": 0
@@ -273,66 +243,51 @@ okx --profile live account balance
 }
 ```
 
-#### 创建任务
-
-使用 OpenClaw cron 工具：
-
-```bash
-# 方式一：通过命令行
-openclaw cron add --job "$(cat morning.json)"
-
-# 方式二：在智能体对话中请求
-# "帮我创建一个定时任务，每天9点触发七月执行日报"
-```
+**⚠️ 必填项**：
+| 字段 | 说明 |
+|------|------|
+| `agentId` | 安装此技能的智能体 ID |
+| `name` | 任务名称，建议格式 `<智能体ID>-btc-morning/evening` |
 
 ---
 
-## 六、飞书通知配置
+## 六、通知渠道配置（可选）
 
-日报发送到飞书需要配置飞书机器人凭证。
+如需发送报告到飞书，可配置飞书机器人凭证。
 
 ### credentials.json
 
-在项目目录创建 `.openclaw/credentials.json`：
+在智能体工作区创建 `.openclaw/credentials.json`：
 
 ```json
 {
   "feishu": {
     "appId": "<飞书应用App ID>",
-    "accountId": "<账号标识，如 'july'>",
+    "accountId": "<账号标识>",
     "targetOpenId": "<目标用户的Open ID>",
     "targetName": "<目标用户名称>"
   }
 }
 ```
 
-**获取方式**：
-- `appId`：飞书开放平台创建应用后获取
-- `targetOpenId`：目标用户的飞书用户 ID（通过飞书 API 或管理后台获取）
-
 **⚠️ 安全提醒**：
 - 此文件包含敏感凭证，**切勿提交到 Git**
-- 已在项目 `.gitignore` 中排除
 
 ---
 
 ## 七、完整部署步骤
 
-### 步骤清单
-
 | 步骤 | 操作 | 验证命令 |
 |------|------|---------|
-| 1 | 克隆仓库 | `ls ~/.openclaw/july-btc-analyzer` |
-| 2 | 注册智能体 | 检查 `openclaw.json` 中 `agents` 数组 |
-| 3 | 创建目录结构 | `ls logs/ skills/btc-alert/rules/` |
-| 4 | 配置代理环境变量 | `echo $http_proxy` |
-| 5 | 编辑 ecosystem.config.js | 填写 cwd 和代理端口 |
-| 6 | 安装依赖 | `npm install` |
-| 7 | 安装 OKX CLI | `okx --version` |
-| 8 | 配置 OKX API | 创建 `~/.okx/config.toml` |
-| 9 | 启动警报器 | `pm2 list` 显示 btc-alert online |
-| 10 | 创建定时任务 | `openclaw cron list` 显示两个任务 |
-| 11 | 配置飞书通知 | 创建 `credentials.json` |
+| 1 | 安装技能 | 检查 `skills/july-btc-analysis/` 目录存在 |
+| 2 | 配置代理环境变量 | `echo $http_proxy` |
+| 3 | 编辑 ecosystem.config.js | 填写 cwd、script 路径、代理端口 |
+| 4 | 安装依赖 | `npm install` |
+| 5 | 安装 OKX CLI | `okx --version` |
+| 6 | 配置 OKX API | 创建 `~/.okx/config.toml` |
+| 7 | 启动警报器 | `pm2 list` 显示 btc-alert online |
+| 8 | 创建定时任务 | `openclaw cron list` 显示两个任务 |
+| 9 | 配置飞书通知（可选） | 创建 `credentials.json` |
 
 ### 验证检查清单
 
@@ -343,7 +298,6 @@ openclaw cron add --job "$(cat morning.json)"
 | Cron 任务 | `openclaw cron list` | 两个日报任务已注册 |
 | OKX CLI | `okx --version` | 显示版本号 |
 | 代理可用 | `curl --proxy $http_proxy https://www.okx.com` | 返回正常 |
-| 智能体注册 | `openclaw agent list` | 显示 july |
 
 ---
 
@@ -351,28 +305,22 @@ openclaw cron add --job "$(cat morning.json)"
 
 ### Q: PM2 启动失败 "script not found"
 
-检查 `cwd` 是否为克隆目录的绝对路径。
+检查：
+- `cwd` 是否为智能体工作区绝对路径
+- `script` 路径是否正确指向 `engine.js`
 
 ### Q: 警报器无法获取数据（ETIMEDOUT）
 
 检查代理配置：
 - 确认代理服务运行中
 - 确认 `http_proxy` 环境变量端口正确
-- 确认 ecosystem.config.js 中 `env.http_proxy` 端口正确
 - 测试：`curl --proxy http://127.0.0.1:<端口> https://www.okx.com`
 
 ### Q: Cron 任务不触发
 
 检查：
-- 智能体 ID 是否与 `openclaw.json` 中注册一致
+- `agentId` 是否与实际智能体 ID 一致
 - 智能体是否正常运行
-
-### Q: 飞书发送失败
-
-检查：
-- `credentials.json` 是否存在
-- `appId` 和 `targetOpenId` 是否正确
-- 飞书机器人是否有发送私聊消息权限
 
 ### Q: OKX CLI 调用失败
 
@@ -380,11 +328,18 @@ openclaw cron add --job "$(cat morning.json)"
 - `~/.okx/config.toml` 是否存在
 - API 凭证是否正确
 - 代理是否可用（国内网络）
-- 使用 `./scripts/okx-proxy.sh` wrapper 而非直接 `okx`
 
-### Q: okx-proxy.sh 执行失败
+---
 
-检查：
-- `which okx` 是否返回有效路径
-- 系统是否安装 proxychains4
-- 代理端口是否正确（`HTTP_PROXY_PORT` 环境变量）
+## 九、技能包 vs 完整版
+
+| 项目 | 技能包版本（本文件） | 完整版（七月智能体仓库） |
+|------|---------------------|------------------------|
+| 安装方式 | ClawHub 安装或手动复制 | 克隆整个仓库 |
+| 智能体注册 | 不需要（安装到现有智能体） | 需要（注册到 openclaw.json） |
+| 私人配置 | 无 | 有（同事关系、飞书目标用户等） |
+| 动态数据 | 无运行时数据 | 有（positions、reports 等） |
+
+**完整版仓库地址**：`git@github.com:Dandan044/july-btc-analyzer.git`
+
+⚠️ **直接克隆完整版可能导致兼容性问题**，推荐使用此技能包版本。
