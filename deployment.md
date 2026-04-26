@@ -256,6 +256,21 @@ okx --profile live account balance
 | `agentId` | 安装此技能的智能体 ID |
 | `name` | 任务名称，建议格式 `<智能体ID>-btc-morning/evening` |
 
+**💡 自 spawn 权限配置**：
+此技能采用自触发机制，智能体收到 `[SPAWN_DAILY_REPORT]` 消息后会 spawn 自己执行日报任务。
+
+**目标智能体需要配置自 spawn 权限**，在 `openclaw.json` 中添加：
+```json
+{
+  "id": "<智能体ID>",
+  "subagents": {
+    "allowAgents": ["<智能体ID>"]
+  }
+}
+```
+
+否则定时任务触发时，智能体无法 spawn 自己执行日报。
+
 ---
 
 ## 六、通知渠道配置（可选）
