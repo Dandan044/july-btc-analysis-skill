@@ -31,11 +31,6 @@ openclaw skill install july-btc-analysis
 <智能体工作区>/skills/july-btc-analysis/
 ```
 
-**⚠️ 注意**：
-- 此技能是**技能包版本**，不包含私人配置
-- 如需完整版（含私人关系、飞书配置等），请参考七月智能体仓库：
-  `git@github.com:Dandan044/july-btc-analyzer.git`
-
 ---
 
 ## 二、代理配置
@@ -329,17 +324,3 @@ okx --profile live account balance
 - API 凭证是否正确
 - 代理是否可用（国内网络）
 
----
-
-## 九、技能包 vs 完整版
-
-| 项目 | 技能包版本（本文件） | 完整版（七月智能体仓库） |
-|------|---------------------|------------------------|
-| 安装方式 | ClawHub 安装或手动复制 | 克隆整个仓库 |
-| 智能体注册 | 不需要（安装到现有智能体） | 需要（注册到 openclaw.json） |
-| 私人配置 | 无 | 有（同事关系、飞书目标用户等） |
-| 动态数据 | 无运行时数据 | 有（positions、reports 等） |
-
-**完整版仓库地址**：`git@github.com:Dandan044/july-btc-analyzer.git`
-
-⚠️ **直接克隆完整版可能导致兼容性问题**，推荐使用此技能包版本。
