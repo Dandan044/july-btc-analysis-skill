@@ -242,35 +242,23 @@ ls -t active/cycle-*/reports/instant-report-*.md 2>/dev/null | head -5
 
 ---
 
-### 8. Spawn 阶段二
+### 8. 记录阶段结束
 
-**构建 Spawn 消息：**
+阶段一完成。输出当前进度和数据清单路径。
+
+**步骤 8.1：记录进度**
+
+在回复中输出：
 
 ```
 阶段一数据获取已完成。
 数据清单: active/cycle-YYYYMMDD-XXX/data-context/data-manifest-instant-YYYY-MM-DD-HHMM.json
-请读取 tasks/daily-report-stage2.md 开始阶段二分析。
 ```
 
-**Spawn 参数：**
-
-```
-sessions_spawn:
-- agentId: "july"
-- mode: "run"
-- timeoutSeconds: 0
-- task: [上述消息]
-```
-
-**执行后立即返回**，不等待阶段二完成。
-
----
-
-### 9. 记录阶段结束
+**步骤 8.2：记录日志****
 
 ```bash
 NOW=$(date '+%Y-%m-%d %H:%M:%S')
-echo "[$NOW] [即时分析阶段一] 完成执行，已 spawn 阶段二" >> logs/daily-report-process.log
 echo "[$NOW] [即时分析阶段一] ========== 阶段一结束 ==========" >> logs/daily-report-process.log
 ```
 
@@ -285,7 +273,6 @@ echo "[$NOW] [即时分析阶段一] ========== 阶段一结束 ==========" >> l
 | 周期文件夹创建失败 | `⛔ ERROR` | 记录异常，尝试继续执行 |
 | 历史报告路径收集失败 | `⚠️ WARN` | 标记 note，继续执行 |
 | 数据清单 JSON 生成失败 | `⛔ ERROR` | 记录异常后结束 |
-| Spawn 阶段二失败 | `⛔ ERROR` | 记录异常后结束 |
 
 ---
 
@@ -298,18 +285,14 @@ echo "[$NOW] [即时分析阶段一] ========== 阶段一结束 ==========" >> l
 5. **不生成数据挖掘报告**：跳过此步骤
 6. **收集历史报告路径**：与日报阶段一规则一致
 7. **manifest 兼容日报阶段二**：格式一致，字段兼容
-8. **Spawn 到日报阶段二**：复用餐段二分析逻辑
+8. **完成后继续阶段二**：输出数据清单路径，然后读取 tasks/daily-report-stage2.md 继续执行
 9. **最后记录阶段结束**
 
 ---
 
-## Spawn 消息规范
+## 阶段过渡
 
-```
-阶段一数据获取已完成。
-数据清单: active/cycle-xxx/data-context/data-manifest-instant-xxx.json
-请读取 tasks/daily-report-stage2.md 开始阶段二分析。
-```
+输出数据清单路径后，立即读取并执行 `tasks/daily-report-stage2.md`。
 
 ---
 
